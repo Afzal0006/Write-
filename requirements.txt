@@ -1,1 +1,3 @@
-pyrogram==2.0.106
+pyrogram[speedups]==2.0.106
+TgCrypto==1.2.5
+Pillow==10.2.0
