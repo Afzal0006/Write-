@@ -2,7 +2,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import random
 
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+BOT_TOKEN = "8221867831:AAGUULzOPowvPpkGNRQpEylmmcTIjvbtcuE"
 
 # Load words from file
 def load_words():
