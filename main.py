@@ -1,78 +1,116 @@
-import json
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import random
 
-BOT_TOKEN = "7607621887:AAHVpaKwitszMY9vfU2-s0n60QNL56rdbM0"
-DATA_FILE = "message_counts.json"
+BOT_TOKEN = "YOUR_BOT_TOKEN"
 
-# Load data from file
-def load_data():
-    try:
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
+# Load words from file
+def load_words():
+    words = []
+    with open("words.txt", "r", encoding="utf-8") as f:
+        for line in f:
+            if "|" in line:
+                word, hint = line.strip().split("|", 1)
+                words.append((word.lower(), hint))
+    return words
 
-# Save data to file
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
+WORDS = load_words()
 
-# Track every message in groups
-async def track_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
+# Game state: {chat_id: {...}}
+games = {}
+
+async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    host_id = update.effective_user.id
+
+    if games.get(chat_id, {}).get("in_progress"):
+        await update.message.reply_text("⚠ A game is already running!")
         return
 
-    data = load_data()
-    chat_id = str(update.message.chat.id)
-    user_id = str(update.message.from_user.id)
-    name = update.message.from_user.first_name
+    games[chat_id] = {"host_id": host_id, "in_progress": True, "round": 0}
+    await update.message.reply_text(f"🎮 Game started by {update.effective_user.mention_html()}!", parse_mode="HTML")
+    await start_round(chat_id, context)
 
-    if chat_id not in data:
-        data[chat_id] = {}
-
-    if user_id not in data[chat_id]:
-        data[chat_id][user_id] = {"name": name, "count": 0}
-
-    data[chat_id][user_id]["count"] += 1
-    save_data(data)
-
-# /rankings command
-async def rankings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /rankings {count}")
+async def start_round(chat_id, context):
+    game = games.get(chat_id)
+    if not game or not game["in_progress"]:
         return
 
-    try:
-        count = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("Count must be a number!")
+    word, hint = random.choice(WORDS)
+    game["word"] = word
+    game["hint"] = hint
+    game["round"] += 1
+
+    keyboard = [[InlineKeyboardButton("👀 See Word", callback_data="see_word")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.send_message(
+        chat_id,
+        f"🔵 Round {game['round']} Started!\nClick the button to see the word (only host).",
+        reply_markup=reply_markup
+    )
+
+async def see_word(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    chat_id = query.message.chat.id
+    user_id = query.from_user.id
+    game = games.get(chat_id)
+
+    if not game or not game.get("in_progress"):
+        await query.answer("❌ No game running!", show_alert=True)
         return
 
-    chat_id = str(update.message.chat.id)
-    data = load_data()
-
-    if chat_id not in data or not data[chat_id]:
-        await update.message.reply_text("No data available for this group yet.")
+    if user_id != game["host_id"]:
+        await query.answer("⚠ Only the host can see the word!", show_alert=True)
         return
 
-    sorted_users = sorted(data[chat_id].items(), key=lambda x: x[1]["count"], reverse=True)
-    total_messages = sum(u["count"] for _, u in sorted_users)
+    await query.message.reply_text(f"🎯 WORD: {game['word']}\n💡 HINT: {game['hint']}")
 
-    text = f"🏆 **Top {count} Active Members** 🏆\n\n"
-    for i, (uid, info) in enumerate(sorted_users[:count], start=1):
-        text += f"{i}. {info['name']} — {info['count']} messages\n"
+async def hint(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    game = games.get(chat_id)
 
-    text += f"\n📊 **Total messages in group:** {total_messages}"
-    await update.message.reply_text(text, parse_mode="Markdown")
+    if not game or not game.get("in_progress"):
+        await update.message.reply_text("❌ No game running!")
+        return
 
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    if user_id != game["host_id"]:
+        await update.message.reply_text("⚠ Only the host can give a hint!")
+        return
 
-    app.add_handler(MessageHandler(filters.TEXT & filters.GROUPS, track_messages))
-    app.add_handler(CommandHandler("rankings", rankings))
+    await update.message.reply_text(f"💡 HINT: {game['hint']}")
 
-    app.run_polling()
+async def handle_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    game = games.get(chat_id)
 
-if __name__ == "__main__":
-    main()
+    if not game or not game.get("in_progress"):
+        return
+
+    guess = update.message.text.strip().lower()
+    if guess == game["word"]:
+        await update.message.reply_text(
+            f"🏆 {update.effective_user.mention_html()} guessed it right!\n🎯 Word: {game['word']}",
+            parse_mode="HTML"
+        )
+        await start_round(chat_id, context)
+
+async def stopgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id in games:
+        games.pop(chat_id)
+        await update.message.reply_text("🛑 Game stopped!")
+    else:
+        await update.message.reply_text("❌ No game running!")
+
+# Bot setup
+app = Application.builder().token(BOT_TOKEN).build()
+app.add_handler(CommandHandler("startgame", startgame))
+app.add_handler(CommandHandler("hint", hint))
+app.add_handler(CommandHandler("stopgame", stopgame))
+app.add_handler(CallbackQueryHandler(see_word, pattern="^see_word$"))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_guess))
+
+print("🤖 Bot is running...")
+app.run_polling()
